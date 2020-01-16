@@ -12,10 +12,10 @@ import requests
 import urllib3
 
 __author__ = "Daniel Fernau"
-__copyright__ = "Copyright 2019, Daniel Fernau"
+__copyright__ = "Copyright 2020, Daniel Fernau"
 __license__ = "GPLv3"
-__version__ = "1.1.1"
-
+__version__ = "1.2.0"
+__credits__ = ["Peter Seabrook", "https://github.com/kenske"]
 
 parser = argparse.ArgumentParser(description='Tool to download footage from a local UniFi Protect system')
 parser.add_argument("--address", default=None, type=str, required=True, dest="address",
@@ -66,6 +66,12 @@ parser.add_argument("--download-request-timeout", default=60, type=int, required
 parser.add_argument("--snapshot", action='store_true', required=False,
                     dest="create_snapshot",
                     help="Capture and download a snapshot from the specified camera(s)")
+parser.add_argument("--only-motion-events", action='store_true', required=False,
+                    dest="download_motion_events",
+                    help="Download only motion event recordings from the specified camera(s)")
+parser.add_argument("--download-motion-heatmaps", action='store_true', required=False,
+                    dest="download_motion_heatmaps",
+                    help="Download motion heatmaps for event recordings")
 
 args = parser.parse_args()
 
@@ -153,6 +159,40 @@ def get_camera_list(bearer_token):
             camera_list.append({"name": str(camera['name']), "id": str(camera['id'])})
 
         return camera_list
+    else:
+        print("Camera list download failed with status " +
+              str(response.status_code) + " " + str(response.reason) + "\n")
+        exit(5)
+
+
+# get motion events list
+def get_motion_event_list(bearer_token, start, end):
+    motion_events_uri = "https://" + str(args.address) + ":" + str(args.port) + \
+                 "/api/events?type=motion&start=" + str(start) + "&end=" + str(end)
+    response = requests.get(motion_events_uri, headers={'Authorization': 'Bearer ' + bearer_token},
+                            verify=args.verify_ssl)
+    if response.status_code == 200:
+        print("Successfully retrieved data from /api/events?type=motion")
+        events_response_json = response.json()
+        return events_response_json
+    else:
+        print("Motion event list download failed with status " +
+              str(response.status_code) + " " + str(response.reason) + "\n")
+        exit(5)
+
+
+# get motion event heatmap
+def get_motion_heatmap(bearer_token, heatmap_id, file_name):
+    heatmap_uri = "https://" + str(args.address) + ":" + str(args.port) + \
+                 "/api/heatmaps/" + str(heatmap_id)
+    response = requests.get(heatmap_uri, headers={'Authorization': 'Bearer ' + bearer_token}, verify=args.verify_ssl)
+    if response.status_code == 200:
+        with open(file_name, "wb") as file:
+            file.write(response.content)
+            print("Motion heatmap download successful \n")
+    else:
+        print("Motion heatmap download failed with status " +
+              str(response.status_code) + " " + str(response.reason) + "\n")
 
 
 # file downloader
@@ -186,6 +226,7 @@ def download_file(uri, file_name):
         exit(5)
 
 
+# print download stats to console
 def print_download_stats():
     global files_downloaded, files_skipped
     files_total = files_downloaded + files_skipped
@@ -249,6 +290,7 @@ def calculate_intervals(start, end):
         yield full_hour_end, original_end - datetime.timedelta(seconds=1)
 
 
+# main function to download footage for a given camera_id
 def download_footage(camera_id, camera_name):
     global api_auth_bearer_token, api_access_key
     global first_download, downloads_with_current_api_auth, downloads_with_current_api_key
@@ -348,6 +390,7 @@ def download_footage(camera_id, camera_name):
             downloads_with_current_api_key += 1
 
 
+# main function to download a snapshot for a given camera_id
 def download_snapshot(camera_id, camera_name):
     global api_auth_bearer_token, api_access_key
     global first_download, downloads_with_current_api_auth, downloads_with_current_api_key
@@ -426,6 +469,96 @@ def download_snapshot(camera_id, camera_name):
         downloads_with_current_api_key += 1
 
 
+# main function to download an event
+def download_event(camera_id, camera_name, event_start_time_js, event_end_time_js, event_type, heatmap_id):
+    global api_auth_bearer_token, api_access_key
+    global first_download, downloads_with_current_api_auth, downloads_with_current_api_key
+    global first_download, files_skipped
+    global target_dir
+
+    event_start_time_obj = datetime.datetime.fromtimestamp(event_start_time_js / 1000)
+    event_end_time_obj = datetime.datetime.fromtimestamp(event_end_time_js / 1000)
+
+    # make camera name safe for use in file name
+    camera_name_fs_safe = "".join(
+        [c for c in camera_name if c.isalpha() or c.isdigit() or c == ' ']
+    ).rstrip().replace(" ", "_") + "_" + str(camera_id)[-4:]
+
+    print("Downloading " + str(event_type) + " event for camera '" + str(camera_name) + "' (" + str(camera_id) + ")")
+
+    # file path for download
+    download_dir = target_dir
+    if bool(args.use_subfolders):
+        folder_year = event_start_time_obj.strftime("%Y")
+        folder_month = event_start_time_obj.strftime("%m")
+        folder_day = event_start_time_obj.strftime("%d")
+
+        dir_by_date_and_name = folder_year + "/" + folder_month + "/" + folder_day + "/" + camera_name_fs_safe
+        target_with_date_and_name = target_dir + "/" + dir_by_date_and_name
+
+        download_dir = target_with_date_and_name
+        if not path.isdir(target_with_date_and_name):
+            makedirs(target_with_date_and_name, exist_ok=True)
+            print("Created path " + str(target_with_date_and_name))
+            download_dir = target_with_date_and_name
+
+    # file name for download
+    filename_timestamp_start = event_start_time_obj.strftime("%Y-%m-%d--%H-%M-%S%z")
+    filename_timestamp_end = event_end_time_obj.strftime("%Y-%m-%d--%H-%M-%S%z")
+    filename_timestamp = filename_timestamp_start + "_" + filename_timestamp_end
+    filename = str(download_dir) + "/" + str(camera_name_fs_safe) + "_" + filename_timestamp + ".mp4"
+
+    print("Downloading " + str(event_type) + " event for time " +
+          str(event_start_time_obj) + " to " + filename)
+
+    # create file without content if argument --touch-files is present
+    if bool(args.touch_files) and not path.exists(filename):
+        print("Argument '--touch-files' is present. Creating file at " + str(filename))
+        open(filename, 'a').close()
+
+    # build video export API address
+    address = "https://" + str(args.address) + ":" + str(args.port) + "/api/video/export?accessKey=" + \
+              str(api_access_key) + "&camera=" + str(camera_id) + \
+              "&start=" + str(event_start_time_js) + "&end=" + str(event_end_time_js)
+
+    # download the file
+    download_file(address, filename)
+    first_download = False
+
+    # download motion heatmap if enabled
+    if args.download_motion_heatmaps and heatmap_id:
+        heatmap_filename = str(download_dir) + "/" + str(camera_name_fs_safe) + "_" + filename_timestamp + ".pgm"
+        get_motion_heatmap(api_auth_bearer_token, heatmap_id, heatmap_filename)
+
+    # use the same API Authentication Token (login session) for set number of downloads only (default: 10)
+    if downloads_with_current_api_auth == int(args.max_downloads_with_auth):
+        print("API Authentication Token has been used for " + str(downloads_with_current_api_auth) +
+              " download(s) - requesting new session token...")
+
+        # get new API auth bearer token and access key
+        api_auth_bearer_token = get_api_auth_bearer_token(str(args.username), str(args.password))
+        api_access_key = get_api_access_key(api_auth_bearer_token)
+        downloads_with_current_api_auth = 1
+        downloads_with_current_api_key = 1
+    else:
+        print("API Authentication Token has been used for " + str(downloads_with_current_api_auth) +
+              " download(s). Maximum is set to " + str(args.max_downloads_with_auth) + ".")
+        downloads_with_current_api_auth += 1
+
+    # use the same API Access Key for set number of downloads only (default: 3)
+    if downloads_with_current_api_key == int(args.max_downloads_with_key):
+        print("API Access Key has been used for " + str(downloads_with_current_api_key) +
+              " download(s) - requesting new access key...")
+
+        # request new access key
+        api_access_key = get_api_access_key(api_auth_bearer_token)
+        downloads_with_current_api_key = 1
+    else:
+        print("API Access Key has been used for " + str(downloads_with_current_api_key) +
+              " download(s). Maximum is set to " + str(args.max_downloads_with_key) + ".")
+        downloads_with_current_api_key += 1
+
+
 first_download = True
 downloads_with_current_api_auth = 1
 downloads_with_current_api_key = 1
@@ -441,7 +574,47 @@ api_access_key = get_api_access_key(api_auth_bearer_token)
 # get camera list
 api_camera_list = get_camera_list(api_auth_bearer_token)
 
-if not args.create_snapshot:
+if args.download_motion_events:
+    # noinspection PyUnboundLocalVariable
+    api_event_list = get_motion_event_list(api_auth_bearer_token, js_timestamp_start, js_timestamp_end)
+
+    # noinspection PyUnboundLocalVariable
+    print("Downloading event video files between " + str(date_time_obj_start) + " and " + str(date_time_obj_end) +
+          " from 'https://" + str(args.address) + ":" + str(args.port) + "/api/video/export' \n")
+
+    for motion_event in api_event_list:
+        motion_start_time_js = int(motion_event['start'])
+        motion_end_time_js = int(motion_event['end'])
+
+        # check if all cameras are selected or if camera from event is in list of requested cameras
+        if args.camera_ids == 'all':
+            for api_camera in api_camera_list:
+                if str(motion_event['camera']) == api_camera['id']:
+                    download_event(api_camera['id'], api_camera['name'],
+                                   motion_start_time_js, motion_end_time_js, 'motion', str(motion_event['heatmap']))
+        else:
+            args_camera_ids = (args.camera_ids.split(','))
+            for api_camera in api_camera_list:
+                if str(motion_event['camera']) == api_camera['id']:
+                    download_event(api_camera['id'], api_camera['name'],
+                                   motion_start_time_js, motion_end_time_js, 'motion', str(motion_event['heatmap']))
+
+elif args.create_snapshot:
+    # noinspection PyUnboundLocalVariable
+    print("Downloading snapshot file(s) for " + str(date_time_obj_start) +
+          " from 'https://" + str(args.address) + ":" + str(args.port) + "/api/cameras/{camera_id}/snapshot' \n")
+
+    if args.camera_ids == 'all':
+        for api_camera in api_camera_list:
+            download_snapshot(api_camera['id'], api_camera['name'])
+    else:
+        args_camera_ids = (args.camera_ids.split(','))
+        for args_camera_id in args_camera_ids:
+            for api_camera in api_camera_list:
+                if args_camera_id == api_camera['id']:
+                    download_snapshot(api_camera['id'], api_camera['name'])
+
+else:
     # noinspection PyUnboundLocalVariable
     print("Downloading video files between " + str(date_time_obj_start) + " and " + str(date_time_obj_end) +
           " from 'https://" + str(args.address) + ":" + str(args.port) + "/api/video/export' \n")
@@ -455,18 +628,5 @@ if not args.create_snapshot:
             for api_camera in api_camera_list:
                 if args_camera_id == api_camera['id']:
                     download_footage(api_camera['id'], api_camera['name'])
-else:
-    print("Downloading snapshot file(s) for " + str(date_time_obj_start) +
-          " from 'https://" + str(args.address) + ":" + str(args.port) + "/api/cameras/{camera_id}/snapshot' \n")
-
-    if args.camera_ids == 'all':
-        for api_camera in api_camera_list:
-            download_snapshot(api_camera['id'], api_camera['name'])
-    else:
-        args_camera_ids = (args.camera_ids.split(','))
-        for args_camera_id in args_camera_ids:
-            for api_camera in api_camera_list:
-                if args_camera_id == api_camera['id']:
-                    download_snapshot(api_camera['id'], api_camera['name'])
 
 print_download_stats()
