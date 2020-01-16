@@ -70,10 +70,17 @@ parser.add_argument("--snapshot", action='store_true', required=False,
 args = parser.parse_args()
 
 # check the provided command line arguments
+# check for either snapshot or start+end
 if not (args.create_snapshot or (args.start and args.end)):
     print("Please use the --snapshot option, or provide --start and --end timestamps")
     exit(6)
 
+# check if end is before start
+if dateutil.parser.parse(args.start) > dateutil.parser.parse(args.end):
+    print("The --start date must be before the --end date")
+    exit(7)
+
+# prepare for snapshot mode
 if args.create_snapshot:
     if args.start or args.end:
         print("The arguments --start and --end are ignored when using the --snapshot option")
