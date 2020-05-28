@@ -65,6 +65,26 @@ from ..sync import ProtectSync
         "Use '--cameras=all' to download footage of all available cameras."
     ),
 )
+@click.option(
+    "--use-subfolders/--no-use-subfolders",
+    default=True,
+    show_default=True,
+    help="Save footage to folder structure with format 'YYYY/MM/DD/camera_name/'",
+)
+@click.option(
+    "--download-request-timeout",
+    "download_timeout",
+    default=60.0,
+    show_default=True,
+    help="Time to wait before aborting download request, in seconds",
+)
+@click.option(
+    "--skip-existing-files",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help="Skip downloading files which already exist on disk",
+)
 def sync(
     dest,
     address,
